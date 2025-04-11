@@ -6,7 +6,6 @@
 
 import yfinance as yf
 import pandas as pd
-import statsmodels.api as sm
 import numpy as np
 from datetime import datetime, timedelta
 
