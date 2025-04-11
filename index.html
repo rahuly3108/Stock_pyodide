@@ -7,25 +7,8 @@
   <script src="https://cdn.jsdelivr.net/pyodide/v0.24.0/full/pyodide.js"></script>
 </head>
 <body>
-  <h2>Upload All Required CSV Files</h2>
-
-  <label>Stock Returns CSV:</label>
-  <input type="file" id="stockReturnsFile" accept=".csv" /><br/><br/>
-
-  <label>Stock Percentage Change CSV:</label>
-  <input type="file" id="stockPrtChngFile" accept=".csv" /><br/><br/>
-
-  <label>Nifty Returns CSV:</label>
-  <input type="file" id="niftyReturnsFile" accept=".csv" /><br/><br/>
-
-  <label>Nifty Returns Without CSV:</label>
-  <input type="file" id="niftyReturnsWithoutFile" accept=".csv" /><br/><br/>
-
-  <label>Master DataFrame CSV:</label>
-  <input type="file" id="masterDfFile" accept=".csv" /><br/><br/>
-
+  <h2>Beta Analysis from GitHub CSVs</h2>
   <button id="runAnalysis">Run Beta Analysis</button>
-
   <pre id="output">Pyodide loading...</pre>
 
   <script type="module">
@@ -37,30 +20,13 @@
       await pyodide.runPythonAsync(`
 import micropip
 await micropip.install("statsmodels")
+await micropip.install("pyodide-http")
 `);
-      document.getElementById("output").textContent = "✅ Pyodide loaded. Upload all 5 files.";
+      document.getElementById("output").textContent = "✅ Pyodide loaded. Click Run Beta Analysis.";
     }
 
     main();
 
-    // Handle each file upload
-    function setupFileUpload(id, filename) {
-      document.getElementById(id).addEventListener("change", async (event) => {
-        const file = event.target.files[0];
-        if (!file) return;
-        const content = await file.text();
-        pyodide.FS.writeFile(filename, content);
-        document.getElementById("output").textContent = `✅ Uploaded ${filename}`;
-      });
-    }
-
-    setupFileUpload("stockReturnsFile", "stock_returns.csv");
-    setupFileUpload("stockPrtChngFile", "stock_prt_chng.csv");
-    setupFileUpload("niftyReturnsFile", "nifty_returns.csv");
-    setupFileUpload("niftyReturnsWithoutFile", "nifty_returns_without.csv");
-    setupFileUpload("masterDfFile", "master_df.csv");
-
-    // Run analysis when all files are ready
     document.getElementById("runAnalysis").addEventListener("click", async () => {
       try {
         const result = await pyodide.runPythonAsync(`
@@ -68,22 +34,23 @@ import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import base64, io
+import pyodide_http
+pyodide_http.patch_all()
 
-stock_returns = pd.read_csv('stock_returns.csv')
-stock_prt_chng = pd.read_csv('stock_prt_chng.csv')
-nifty_returns = pd.read_csv('nifty_returns.csv')
-nifty_returns_without = pd.read_csv('nifty_returns_without.csv')
-master_df = pd.read_csv('master_df.csv')
+base_url = "https://raw.githubusercontent.com/rahuly3108/Stock_pyodide/main/"
+
+stock_returns = pd.read_csv(base_url + "stock_returns.csv")
+stock_prt_chng = pd.read_csv(base_url + "stock_prt_chng.csv")
+nifty_returns = pd.read_csv(base_url + "nifty_returns.csv")
+nifty_returns_without = pd.read_csv(base_url + "nifty_returns_without.csv")
+master_df = pd.read_csv(base_url + "master_df.csv")
+
 
 def calculate_betas(master, stock_returns):
-    # master: returns with columns Date, Nifty, stock returns
-    # stock_returns: actual prices with same columns
-
     returns_df = master.drop(columns=["Date", "Nifty"])
     market_df = master[["Nifty"]]
     returns_df, market_df = returns_df.align(market_df, join='inner', axis=0)
 
-    # Main Beta
     X = sm.add_constant(market_df)
     betas = {}
     for stock in returns_df.columns:
@@ -93,10 +60,9 @@ def calculate_betas(master, stock_returns):
             continue
         model = sm.OLS(combined[stock], combined[["const", "Nifty"]]).fit()
         betas[stock] = model.params["Nifty"]
-    
+
     beta_df = pd.DataFrame(list(betas.items()), columns=["Symbol", "Beta"])
 
-    # Downside Beta
     master_downside = master[master["Nifty"] < 0]
     returns_df_downside = master_downside.drop(columns=["Date", "Nifty"])
     market_df_downside = master_downside[["Nifty"]]
@@ -111,7 +77,6 @@ def calculate_betas(master, stock_returns):
         downside_betas[stock] = model.params["Nifty"]
     beta_df["Downside Beta"] = beta_df["Symbol"].map(downside_betas)
 
-    # Upside Beta
     master_upside = master[master["Nifty"] > 0]
     returns_df_upside = master_upside.drop(columns=["Date", "Nifty"])
     market_df_upside = master_upside[["Nifty"]]
@@ -126,31 +91,25 @@ def calculate_betas(master, stock_returns):
         upside_betas[stock] = model.params["Nifty"]
     beta_df["Upside Beta"] = beta_df["Symbol"].map(upside_betas)
 
-    # Correlation
     correlations = {
         stock: returns_df[stock].corr(market_df["Nifty"])
         for stock in returns_df.columns
     }
     beta_df["Correlation with Nifty"] = beta_df["Symbol"].map(correlations)
 
-    # 52W High & Low (use stock_returns)
-   # price_df = stock_returns.drop(columns=["Date", "Nifty"])
     price_52w = stock_returns.tail(252)
     highs = price_52w.max()
     lows = price_52w.min()
     beta_df["52W High"] = beta_df["Symbol"].map(highs)
     beta_df["52W Low"] = beta_df["Symbol"].map(lows)
 
-    # LTP (use stock_returns)
     ltps = stock_returns.iloc[-1]
     beta_df["LTP"] = beta_df["Symbol"].map(ltps)
 
     return beta_df.round(2)
 
-
 beta_df = calculate_betas(master_df, stock_returns)
 
-# Plotting
 nifty_returns_without['Date'] = pd.to_datetime(nifty_returns_without['Date'])
 plt.figure(figsize=(10, 4))
 plt.plot(nifty_returns_without['Date'], nifty_returns_without['Nifty'], color='blue', label='Nifty 50')
@@ -168,23 +127,23 @@ img_base64 = base64.b64encode(buf.read()).decode('utf-8')
 img_html = f"<img src='data:image/png;base64,{img_base64}' /><br>"
 
 style = '''<style>
-.table-wrapper {{
+.table-wrapper {
     height: 300px;
     overflow-y: scroll;
     border: 1px solid #ccc;
     margin-bottom: 20px;
-}}
+}
 
-.table-wrapper table {{
+.table-wrapper table {
     width: 100%;
     border-collapse: collapse;
-}}
+}
 
-.table-wrapper th, .table-wrapper td {{
+.table-wrapper th, .table-wrapper td {
     border: 1px solid #ddd;
     padding: 8px;
     text-align: left;
-}}
+}
 </style>'''
 
 table_html = f"<div class='table-wrapper'>{beta_df.to_html(index=False)}</div>"
